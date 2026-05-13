@@ -1,0 +1,50 @@
+Device: cuda, Workers: 0
+Train subset size: 5000
+Val subset size: 1000
+Class weights: [0.4011554419994354, 1.5988445281982422]
+=== segformer_standard (seed=42) ===
+segformer_standard | epoch 1/10
+segformer_standard | train_loss=0.9146 | val_loss=0.5896 | IoU=0.6317 | Dice=0.7743 | Acc=0.8913
+segformer_standard | epoch 2/10
+segformer_standard | train_loss=0.5856 | val_loss=0.5434 | IoU=0.6488 | Dice=0.7870 | Acc=0.8966
+segformer_standard | epoch 3/10
+segformer_standard | train_loss=0.5354 | val_loss=0.5141 | IoU=0.6663 | Dice=0.7998 | Acc=0.9037
+segformer_standard | epoch 4/10
+segformer_standard | train_loss=0.5061 | val_loss=0.5123 | IoU=0.6718 | Dice=0.8037 | Acc=0.9066
+segformer_standard | epoch 5/10
+segformer_standard | train_loss=0.4789 | val_loss=0.5118 | IoU=0.6693 | Dice=0.8019 | Acc=0.9045
+segformer_standard | epoch 6/10
+segformer_standard | train_loss=0.4686 | val_loss=0.5466 | IoU=0.6843 | Dice=0.8126 | Acc=0.9148
+segformer_standard | epoch 7/10
+segformer_standard | train_loss=0.4552 | val_loss=0.5320 | IoU=0.6819 | Dice=0.8109 | Acc=0.9122
+segformer_standard | epoch 8/10
+segformer_standard | train_loss=0.4461 | val_loss=0.5360 | IoU=0.6817 | Dice=0.8107 | Acc=0.9118
+segformer_standard | epoch 9/10
+segformer_standard | train_loss=0.4443 | val_loss=0.5255 | IoU=0.6815 | Dice=0.8106 | Acc=0.9114
+segformer_standard | epoch 10/10
+segformer_standard | train_loss=0.4361 | val_loss=0.5218 | IoU=0.6804 | Dice=0.8098 | Acc=0.9105
+=== segformer_QQ (seed=42) ===
+segformer_QQ | epoch 1/10
+segformer_QQ | train_loss=0.9991 | val_loss=0.7090 | IoU=0.5491 | Dice=0.7089 | Acc=0.8461
+segformer_QQ | epoch 2/10
+segformer_QQ | train_loss=0.6943 | val_loss=0.6468 | IoU=0.5835 | Dice=0.7369 | Acc=0.8650
+segformer_QQ | epoch 3/10
+segformer_QQ | train_loss=0.6431 | val_loss=0.6101 | IoU=0.6102 | Dice=0.7579 | Acc=0.8802
+segformer_QQ | epoch 4/10
+segformer_QQ | train_loss=0.6110 | val_loss=0.6021 | IoU=0.6134 | Dice=0.7603 | Acc=0.8804
+segformer_QQ | epoch 5/10
+segformer_QQ | train_loss=0.5850 | val_loss=0.5976 | IoU=0.6220 | Dice=0.7669 | Acc=0.8854
+segformer_QQ | epoch 6/10
+segformer_QQ | train_loss=0.5743 | val_loss=0.6093 | IoU=0.6326 | Dice=0.7750 | Acc=0.8930
+segformer_QQ | epoch 7/10
+segformer_QQ | train_loss=0.5572 | val_loss=0.6128 | IoU=0.6351 | Dice=0.7768 | Acc=0.8945
+segformer_QQ | epoch 8/10
+segformer_QQ | train_loss=0.5473 | val_loss=0.6151 | IoU=0.6337 | Dice=0.7758 | Acc=0.8933
+segformer_QQ | epoch 9/10
+segformer_QQ | train_loss=0.5482 | val_loss=0.6007 | IoU=0.6324 | Dice=0.7748 | Acc=0.8914
+segformer_QQ | epoch 10/10
+segformer_QQ | train_loss=0.5433 | val_loss=0.5978 | IoU=0.6324 | Dice=0.7748 | Acc=0.8912
+=== FINAL COMPARISON ===
+Standard best IoU: 0.6843
+QQ best IoU:       0.6351
+Difference:        -0.0492
