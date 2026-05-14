@@ -42,9 +42,6 @@ def seed_worker(worker_id):
     np.random.seed(worker_seed)
     random.seed(worker_seed)
 
-# =====================
-# CUTMIX
-# =====================
 def rand_bbox(size, lam):
     W = size[2]
     H = size[3]
@@ -63,7 +60,6 @@ def rand_bbox(size, lam):
 
     return bbx1, bby1, bbx2, bby2
 
-
 def cutmix_data(x, y, alpha=1.0):
     lam = np.random.beta(alpha, alpha)
     batch_size = x.size(0)
@@ -78,9 +74,7 @@ def cutmix_data(x, y, alpha=1.0):
     lam = 1 - ((bbx2 - bbx1) * (bby2 - bby1) / (x.size(-1) * x.size(-2)))
     return x, y, shuffled_y, lam
 
-# =====================
-# MODEL
-# =====================
+
 class PatchEmbed(nn.Module):
     def __init__(self, img_size, patch_size, dim):
         super().__init__()
@@ -246,12 +240,12 @@ def train(model, checkpoint_path, log_path, seed):
     else:
         log_file_mode = 'a'  
 
-    log_file = open(log_path, log_file_mode) if log_path else None
+    log_file = open(log_path, log_file_mode, encoding='utf-8') if log_path else None
 
     if os.path.exists(checkpoint_path):
-        print(f"🔄 Loading checkpoint: {checkpoint_path}")
+        print(f"Loading checkpoint: {checkpoint_path}")
         if log_file:
-            log_file.write(f"🔄 Loading checkpoint: {checkpoint_path}\n")
+            log_file.write(f"Loading checkpoint: {checkpoint_path}\n")
         checkpoint = torch.load(checkpoint_path, map_location=DEVICE)
 
         model.load_state_dict(checkpoint["model"])
@@ -266,9 +260,9 @@ def train(model, checkpoint_path, log_path, seed):
         val_losses = checkpoint.get("val_losses", [])
         top2_accs = checkpoint.get("top2_accs", [])
 
-        print(f"✅ Resumed from epoch {start_epoch}")
+        print(f"Resumed from epoch {start_epoch}")
         if log_file:
-            log_file.write(f"✅ Resumed from epoch {start_epoch}\n")
+            log_file.write(f"Resumed from epoch {start_epoch}\n")
 
 
     def evaluate():
@@ -373,40 +367,29 @@ if __name__ == "__main__":
     hybrid = HybridModel()
     metrics_hybrid = train(hybrid, "checkpoint91_hybrid.pth", "log_hybrid.txt", seed=SEED)
 
-    fig1, ax1 = plt.subplots(figsize=(10, 6))
-    ax1.plot(metrics_mixer["train_loss"], label="Mixer")
-    ax1.plot(metrics_hybrid["train_loss"], label="Mixer+Attention")
-    ax1.set_title("Train Loss")
-    ax1.set_xlabel("Epoch")
-    ax1.set_ylabel("Loss")
-    ax1.legend()
-    ax1.grid(True)
 
-    fig2, ax2 = plt.subplots(figsize=(10, 6))
-    ax2.plot(metrics_mixer["val_loss"], label="Mixer")
-    ax2.plot(metrics_hybrid["val_loss"], label="Mixer+Attention")
-    ax2.set_title("Validation Loss")
-    ax2.set_xlabel("Epoch")
-    ax2.set_ylabel("Loss")
-    ax2.legend()
-    ax2.grid(True)
+    plt.figure("Train Loss")
+    plt.plot(metrics_mixer["train_loss"], label="Mixer")
+    plt.plot(metrics_hybrid["train_loss"], label="Mixer+Attention")
+    plt.title("Train Loss")
+    plt.legend()
 
-    fig3, ax3 = plt.subplots(figsize=(10, 6))
-    ax3.plot(metrics_mixer["top1"], label="Mixer")
-    ax3.plot(metrics_hybrid["top1"], label="Mixer+Attention")
-    ax3.set_title("Top-1 Accuracy")
-    ax3.set_xlabel("Epoch")
-    ax3.set_ylabel("Accuracy")
-    ax3.legend()
-    ax3.grid(True)
+    plt.figure("Validation Loss")
+    plt.plot(metrics_mixer["val_loss"], label="Mixer")
+    plt.plot(metrics_hybrid["val_loss"], label="Mixer+Attention")
+    plt.title("Validation Loss")
+    plt.legend()
 
-    fig4, ax4 = plt.subplots(figsize=(10, 6))
-    ax4.plot(metrics_mixer["top2"], label="Mixer")
-    ax4.plot(metrics_hybrid["top2"], label="Mixer+Attention")
-    ax4.set_title("Top-2 Accuracy")
-    ax4.set_xlabel("Epoch")
-    ax4.set_ylabel("Accuracy")
-    ax4.legend()
-    ax4.grid(True)
+    plt.figure("Top-1 Accuracy")
+    plt.plot(metrics_mixer["top1"], label="Mixer")
+    plt.plot(metrics_hybrid["top1"], label="Mixer+Attention")
+    plt.title("Top-1 Accuracy")
+    plt.legend()
+
+    plt.figure("Top-2 Accuracy")
+    plt.plot(metrics_mixer["top2"], label="Mixer")
+    plt.plot(metrics_hybrid["top2"], label="Mixer+Attention")
+    plt.title("Top-2 Accuracy")
+    plt.legend()
 
     plt.show()
