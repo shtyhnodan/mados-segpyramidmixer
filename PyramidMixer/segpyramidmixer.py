@@ -14,10 +14,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
-from torchvision import transforms
 from torchvision.transforms import functional as TF
 from torchvision.transforms import InterpolationMode
 import matplotlib.pyplot as plt
+
 warnings.filterwarnings("ignore")
 
 torch.backends.cudnn.benchmark = True
@@ -43,13 +43,13 @@ GROUP_SIZE = 60
 
 MADOS_ROOT = "./MADOS"
 RESOLUTION = "10"
-NUM_CLASSES = 20 
+NUM_CLASSES = 20
 
 BASE_LR = 2e-4
 MIN_LR = 1e-6
-WEIGHT_DECAY = 0.05
-DROP_RATE = 0.03
-DROP_PATH_RATE = 0.02
+WEIGHT_DECAY = 0.08
+DROP_RATE = 0.05
+DROP_PATH_RATE = 0.05
 
 CHECKPOINT_PATH = "checkpoint_mados.pth"
 BEST_PATH = "best_mados.pth"
@@ -62,14 +62,7 @@ def seed_everything(seed: int = 42):
     torch.cuda.manual_seed_all(seed)
 
 
-# =====================
-# DATASET HELPERS
-# =====================
 def parse_split_entry(entry: str):
-    """
-    Split entries look like: Scene_12_34
-    Meaning: scene id = 12, crop id = 34
-    """
     m = re.fullmatch(r"Scene_(\d+)_(\d+)", entry.strip())
     if m:
         scene_id = int(m.group(1))
@@ -77,22 +70,21 @@ def parse_split_entry(entry: str):
         return scene_id, crop_id
     raise ValueError(f"Cannot parse split entry: {entry}")
 
+
 def build_sample_weights(train_dataset):
     weights = []
 
     for _, cl_path in train_dataset.samples:
         mask = np.array(Image.open(cl_path), dtype=np.int64)
         valid_pixels = np.sum((mask != 0) & (mask != 255))
-        w = math.sqrt(float(valid_pixels))
+        w = 1.0 + math.sqrt(float(valid_pixels))
         weights.append(w)
 
     weights = torch.tensor(weights, dtype=torch.double)
     weights = weights / weights.mean()
     return weights
 
-# =====================
-# DATASET
-# =====================
+
 class MADOSSegDataset(Dataset):
     def __init__(
         self,
@@ -138,7 +130,6 @@ class MADOSSegDataset(Dataset):
             if rgb_path is None or cl_path is None or not rgb_path.exists() or not cl_path.exists():
                 continue
 
-            # Drop empty examples up-front so they never reach the DataLoader.
             if self.filter_empty:
                 mask = np.array(Image.open(cl_path), dtype=np.int64)
                 valid_pixels = np.sum((mask != 0) & (mask != 255))
@@ -201,9 +192,6 @@ class MADOSSegDataset(Dataset):
         return x, y
 
 
-# =====================
-# MODEL UTILS
-# =====================
 class DropPath(nn.Module):
     def __init__(self, drop_prob=0.0):
         super().__init__()
@@ -233,9 +221,6 @@ def best_factor_pair(n: int):
     return 1, n
 
 
-# =====================
-# PATCH EMBEDDING
-# =====================
 class PatchEmbed(nn.Module):
     def __init__(self, img_size, patch_size, dim, in_chans):
         super().__init__()
@@ -253,9 +238,6 @@ class PatchEmbed(nn.Module):
         return self.proj(x)
 
 
-# =====================
-# CHUNKED PATCH MIXER
-# =====================
 class ChunkPatchMixer(nn.Module):
     def __init__(self, dim, chunk_size=60, heads=4, drop_path=0.0, dropout=0.0):
         super().__init__()
@@ -326,16 +308,13 @@ class ChunkPatchMixer(nn.Module):
         n_pad = x.shape[1]
         g = n_pad // self.chunk_size
 
-        # [B, N, C] -> [B, G, S, C], where S is the chunk size.
         xg = x.view(b, g, self.chunk_size, c)
 
-        # Step 1: attention inside each chunk.
         y = self.norm1(xg).view(b * g, self.chunk_size, c)
         y, _ = self.attn(y, y, y, need_weights=False)
         y = y.view(b, g, self.chunk_size, c)
         xg = xg + self.drop_path(y)
 
-        # Step 2: first transpose-style mixing + MLP1.
         y = self.norm2(xg).view(b, g, self.chunk_h, self.chunk_w, c)
         y = y.permute(0, 1, 2, 4, 3).contiguous()
         y = y.view(b * g * self.chunk_h, c, self.chunk_w)
@@ -344,7 +323,6 @@ class ChunkPatchMixer(nn.Module):
         y = y.view(b, g, self.chunk_size, c)
         xg = xg + self.drop_path(y)
 
-        # Step 3: transpose again + MLP2.
         y = self.norm3(xg).view(b, g, self.chunk_h, self.chunk_w, c)
         y = y.transpose(2, 3).contiguous()
         y = y.view(b * g * self.chunk_w, c, self.chunk_h)
@@ -353,7 +331,6 @@ class ChunkPatchMixer(nn.Module):
         y = y.view(b, g, self.chunk_size, c)
         xg = xg + self.drop_path(y)
 
-        # Step 4: channel mixing.
         y = self.channel_mlp(self.norm4(xg))
         xg = xg + self.drop_path(y)
 
@@ -364,9 +341,6 @@ class ChunkPatchMixer(nn.Module):
         return self._from_tokens(x, spatial)
 
 
-# =====================
-# PATCH MERGE
-# =====================
 class PatchMerge(nn.Module):
     def __init__(self, dim):
         super().__init__()
@@ -393,9 +367,6 @@ class PatchMerge(nn.Module):
         return x
 
 
-# =====================
-# DECODER
-# =====================
 class DecoderUpBlock(nn.Module):
     def __init__(self, dim):
         super().__init__()
@@ -412,9 +383,6 @@ class DecoderUpBlock(nn.Module):
         return self.block(x)
 
 
-# =====================
-# MODEL
-# =====================
 class SegPyramidMixerAttention(nn.Module):
     def __init__(self, in_chans: int, num_classes: int):
         super().__init__()
@@ -489,9 +457,6 @@ class SegPyramidMixerAttention(nn.Module):
         return x
 
 
-# =====================
-# METRICS
-# =====================
 @torch.no_grad()
 def compute_metrics(logits, targets, num_classes=3, ignore_index=255):
     preds = logits.argmax(dim=1)
@@ -517,36 +482,6 @@ def compute_metrics(logits, targets, num_classes=3, ignore_index=255):
     return pixel_acc, miou
 
 
-@torch.no_grad()
-def compute_per_class_iou(model, loader, num_classes=3, ignore_index=255):
-    model.eval()
-    intersections = torch.zeros(num_classes, dtype=torch.float64, device=DEVICE)
-    unions = torch.zeros(num_classes, dtype=torch.float64, device=DEVICE)
-
-    for x, y in loader:
-        x = x.to(DEVICE, non_blocking=True)
-        y = y.to(DEVICE, non_blocking=True)
-        logits = model(x)
-        preds = logits.argmax(dim=1)
-        valid = y != ignore_index
-
-        for cls in range(num_classes):
-            pred_c = preds == cls
-            targ_c = y == cls
-            inter = ((pred_c & targ_c) & valid).sum().item()
-            union = (((pred_c | targ_c) & valid)).sum().item()
-            intersections[cls] += inter
-            unions[cls] += union
-
-    iou = torch.full((num_classes,), float("nan"), dtype=torch.float64, device=DEVICE)
-    nonzero = unions > 0
-    iou[nonzero] = intersections[nonzero] / unions[nonzero]
-    return iou.detach().cpu().numpy()
-
-
-# =====================
-# EMA
-# =====================
 class EMA:
     def __init__(self, model, decay=0.9999):
         self.decay = decay
@@ -600,9 +535,6 @@ class EMA:
                 buffer.copy_(self.backup[name])
 
 
-# =====================
-# EVALUATION
-# =====================
 @torch.inference_mode()
 def evaluate_model(model, loader, criterion, num_classes=NUM_CLASSES, ignore_index=255):
     model.eval()
@@ -649,9 +581,6 @@ def evaluate_model(model, loader, criterion, num_classes=NUM_CLASSES, ignore_ind
     )
 
 
-# =====================
-# TRAINING
-# =====================
 def cosine_with_warmup_factor(epoch: int):
     min_factor = MIN_LR / BASE_LR
     if epoch < WARMUP_EPOCHS:
@@ -661,7 +590,7 @@ def cosine_with_warmup_factor(epoch: int):
     return min_factor + (1.0 - min_factor) * cosine
 
 
-def train(model, train_loader, val_loader, criterion):
+def train(model, train_loader, train_eval_loader, val_loader, criterion):
     model = model.to(DEVICE)
     ema = EMA(model, decay=0.9999)
 
@@ -704,8 +633,6 @@ def train(model, train_loader, val_loader, criterion):
         best_miou = checkpoint.get("best_miou", 0.0)
         print(f"Resumed from epoch {start_epoch}")
 
-
-
     for epoch in range(start_epoch, EPOCHS):
         model.train()
         total_loss = 0.0
@@ -740,13 +667,13 @@ def train(model, train_loader, val_loader, criterion):
             global_step += 1
 
         scheduler.step()
-        avg_loss = total_loss / max(valid_steps, 1)
-        current_lr = optimizer.param_groups[0]["lr"]
 
         ema.apply(model)
-        train_loss_eval, train_pix_acc, train_miou, train_pc_iou = evaluate_model(model, train_loader, criterion)
+        train_loss_eval, train_pix_acc, train_miou, train_pc_iou = evaluate_model(model, train_eval_loader, criterion)
         val_loss, val_pix_acc, val_miou, val_pc_iou = evaluate_model(model, val_loader, criterion)
         ema.restore(model)
+
+        current_lr = optimizer.param_groups[0]["lr"]
 
         history["train_loss"].append(train_loss_eval)
         history["val_loss"].append(val_loss)
@@ -780,6 +707,7 @@ def train(model, train_loader, val_loader, criterion):
                 },
                 BEST_PATH,
             )
+            # print(f"Saved best checkpoint: {BEST_PATH}")
         else:
             epochs_no_improve += 1
 
@@ -797,6 +725,7 @@ def train(model, train_loader, val_loader, criterion):
                 },
                 CHECKPOINT_PATH,
             )
+            # print(f"Saved checkpoint at epoch {epoch}")
 
         if epochs_no_improve >= EARLY_STOP_PATIENCE:
             print(f"Early stopping at epoch {epoch} (no improvement for {EARLY_STOP_PATIENCE} epochs)")
@@ -805,9 +734,6 @@ def train(model, train_loader, val_loader, criterion):
     return history
 
 
-# =====================
-# MAIN
-# =====================
 if __name__ == "__main__":
     freeze_support()
     seed_everything(SEED)
@@ -823,6 +749,16 @@ if __name__ == "__main__":
         label_map=label_map,
         image_size=IMAGE_SIZE,
         train=True,
+        filter_empty=True,
+    )
+    train_eval_dataset = MADOSSegDataset(
+        root=MADOS_ROOT,
+        split="train",
+        resolution=RESOLUTION,
+        label_map=label_map,
+        image_size=IMAGE_SIZE,
+        train=False,
+        filter_empty=True,
     )
     val_dataset = MADOSSegDataset(
         root=MADOS_ROOT,
@@ -831,6 +767,7 @@ if __name__ == "__main__":
         label_map=label_map,
         image_size=IMAGE_SIZE,
         train=False,
+        filter_empty=True,
     )
     test_dataset = MADOSSegDataset(
         root=MADOS_ROOT,
@@ -839,6 +776,7 @@ if __name__ == "__main__":
         label_map=label_map,
         image_size=IMAGE_SIZE,
         train=False,
+        filter_empty=True,
     )
 
     sample_x, sample_y = train_dataset[0]
@@ -854,7 +792,7 @@ if __name__ == "__main__":
     sample_weights = build_sample_weights(train_dataset)
     train_sampler = WeightedRandomSampler(
         weights=sample_weights,
-        num_samples=len(sample_weights) * 2,
+        num_samples=len(sample_weights),
         replacement=True,
     )
 
@@ -864,6 +802,14 @@ if __name__ == "__main__":
         sampler=train_sampler,
         shuffle=False,
         drop_last=True,
+        num_workers=NUM_WORKERS,
+        pin_memory=(DEVICE == "cuda"),
+        persistent_workers=(NUM_WORKERS > 0),
+    )
+    train_eval_loader = DataLoader(
+        train_eval_dataset,
+        batch_size=BATCH_SIZE,
+        shuffle=False,
         num_workers=NUM_WORKERS,
         pin_memory=(DEVICE == "cuda"),
         persistent_workers=(NUM_WORKERS > 0),
@@ -888,14 +834,18 @@ if __name__ == "__main__":
     print("Training SegPyramidMixer...")
     model = SegPyramidMixerAttention(in_chans=in_chans, num_classes=NUM_CLASSES)
     criterion = nn.CrossEntropyLoss(ignore_index=255)
-    history = train(model, train_loader, val_loader, criterion)
+    history = train(model, train_loader, train_eval_loader, val_loader, criterion)
 
     if os.path.exists(BEST_PATH):
         best_ckpt = torch.load(BEST_PATH, map_location=DEVICE, weights_only=False)
         model.load_state_dict(best_ckpt["model"])
 
-    best_train_loss, best_train_pix_acc, best_train_miou, best_train_pc_iou = evaluate_model(model, train_loader, criterion)
-    best_val_loss, best_val_pix_acc, best_val_miou, best_val_pc_iou = evaluate_model(model, val_loader, criterion)
+    best_train_loss, best_train_pix_acc, best_train_miou, best_train_pc_iou = evaluate_model(
+        model, train_eval_loader, criterion
+    )
+    best_val_loss, best_val_pix_acc, best_val_miou, best_val_pc_iou = evaluate_model(
+        model, val_loader, criterion
+    )
 
     class_ids = np.arange(1, NUM_CLASSES + 1)
     width = 0.35
