@@ -5,9 +5,12 @@ import re
 import warnings
 from pathlib import Path
 from multiprocessing import freeze_support
+from glob import glob
 
 import numpy as np
 from PIL import Image
+import rasterio
+from rasterio.enums import Resampling
 
 import torch
 import torch.nn as nn
@@ -34,7 +37,7 @@ EARLY_STOP_PATIENCE = 12
 BATCH_SIZE = 2
 NUM_WORKERS = 2
 
-IMAGE_SIZE = 192
+IMAGE_SIZE = 240
 PATCH_SIZE = 4
 DIM = 192
 DEPTH = 8
@@ -42,8 +45,8 @@ HEADS = 4
 GROUP_SIZE = 60
 
 MADOS_ROOT = "./MADOS"
-RESOLUTION = "10"
-NUM_CLASSES = 20
+
+NUM_CLASSES = 15
 
 BASE_LR = 2e-4
 MIN_LR = 1e-6
@@ -53,6 +56,19 @@ DROP_PATH_RATE = 0.05
 
 CHECKPOINT_PATH = "checkpoint_mados.pth"
 BEST_PATH = "best_mados.pth"
+
+# (Rhorc-каналы Sentinel-2)
+BANDS_MEAN = np.array([
+    0.0582676, 0.05223386, 0.04381474, 0.0357083,
+    0.03412902, 0.03680401, 0.03999107, 0.03566642,
+    0.03965081, 0.0267993, 0.01978944
+], dtype=np.float32)
+
+BANDS_STD = np.array([
+    0.03240627, 0.03432253, 0.0354812, 0.0375769,
+    0.03785412, 0.04992323, 0.05884482, 0.05545856,
+    0.06423746, 0.04211187, 0.03019115
+], dtype=np.float32)
 
 
 def seed_everything(seed: int = 42):
@@ -73,7 +89,6 @@ def parse_split_entry(entry: str):
 
 def build_sample_weights(train_dataset):
     weights = []
-
     for _, cl_path in train_dataset.samples:
         mask = np.array(Image.open(cl_path), dtype=np.int64)
         valid_pixels = np.sum((mask != 0) & (mask != 255))
@@ -86,18 +101,8 @@ def build_sample_weights(train_dataset):
 
 
 class MADOSSegDataset(Dataset):
-    def __init__(
-        self,
-        root: str,
-        split: str,
-        resolution: str,
-        label_map: dict,
-        image_size: int = 128,
-        train: bool = True,
-        filter_empty: bool = True,
-    ):
+    def __init__(self, root: str, split: str, label_map: dict, image_size: int = 128, train: bool = True, filter_empty: bool = True):
         self.root = Path(root)
-        self.resolution = resolution
         self.label_map = label_map
         self.image_size = image_size
         self.train = train
@@ -113,21 +118,17 @@ class MADOSSegDataset(Dataset):
         self.samples = []
         for entry in self.entries:
             scene_id, crop_id = parse_split_entry(entry)
-            scene_dir = self.root / f"Scene_{scene_id}" / self.resolution
+            scene_dir = self.root / f"Scene_{scene_id}"
             if not scene_dir.exists():
                 continue
 
-            rgb_path = scene_dir / f"Scene_{scene_id}_L2R_rgb_{crop_id}.png"
-            if not rgb_path.exists():
-                candidates = sorted(scene_dir.glob(f"*_rgb_{crop_id}.png"))
-                rgb_path = candidates[0] if candidates else None
+            pattern = os.path.join(str(scene_dir), '*', f'*L2R_rhorc*_{crop_id}.tif')
+            all_bands = sorted(glob(pattern), key=lambda p: int(re.search(r'rhorc_(\d+)_', p).group(1)))
+            if len(all_bands) != 11:
+                continue
 
-            cl_path = scene_dir / f"Scene_{scene_id}_L2R_cl_{crop_id}.tif"
+            cl_path = scene_dir / '10' / f'Scene_{scene_id}_L2R_cl_{crop_id}.tif'
             if not cl_path.exists():
-                candidates = sorted(scene_dir.glob(f"*_cl_{crop_id}.tif"))
-                cl_path = candidates[0] if candidates else None
-
-            if rgb_path is None or cl_path is None or not rgb_path.exists() or not cl_path.exists():
                 continue
 
             if self.filter_empty:
@@ -136,24 +137,45 @@ class MADOSSegDataset(Dataset):
                 if valid_pixels == 0:
                     continue
 
-            self.samples.append((rgb_path, cl_path))
+            self.samples.append((all_bands, cl_path))
 
         if len(self.samples) == 0:
             raise RuntimeError(
                 f"No samples found in {split_file}. "
-                f"Check that filenames follow Scene_<scene>_L2R_rgb_<crop>.png and Scene_<scene>_L2R_cl_<crop>.tif"
+                f"Check that filenames follow *_L2R_rhorc_*_<crop>.tif and Scene_<scene>_L2R_cl_<crop>.tif"
             )
 
     def __len__(self):
         return len(self.samples)
 
-    def _load_image(self, rgb_path: Path) -> torch.Tensor:
-        img = Image.open(rgb_path).convert("RGB")
-        arr = np.array(img, dtype=np.float32) / 255.0
-        x = torch.from_numpy(arr.transpose(2, 0, 1)).float()
+    def _load_image(self, band_paths):
+        current_image = []
+        for band_path in band_paths:
+            resolution = int(Path(band_path).parent.name)
+            upscale_factor = resolution // 10
 
-        mean = torch.tensor([0.485, 0.456, 0.406], dtype=torch.float32).view(3, 1, 1)
-        std = torch.tensor([0.229, 0.224, 0.225], dtype=torch.float32).view(3, 1, 1)
+            with rasterio.open(band_path, mode='r') as src:
+                img = src.read(
+                    1,
+                    out_shape=(
+                        int(src.height * upscale_factor),
+                        int(src.width * upscale_factor)
+                    ),
+                    resampling=Resampling.nearest
+                ).copy()
+                current_image.append(img)
+
+        stacked_image = np.stack(current_image).astype(np.float32)
+
+        nan_mask = np.isnan(stacked_image)
+        if nan_mask.any():
+            mean_tiled = np.tile(BANDS_MEAN[:, np.newaxis, np.newaxis],
+                                 (1, stacked_image.shape[1], stacked_image.shape[2]))
+            stacked_image[nan_mask] = mean_tiled[nan_mask]
+
+        x = torch.from_numpy(stacked_image)
+        mean = torch.from_numpy(BANDS_MEAN).view(11, 1, 1)
+        std = torch.from_numpy(BANDS_STD).view(11, 1, 1)
         x = (x - mean) / std
         return x
 
@@ -180,8 +202,8 @@ class MADOSSegDataset(Dataset):
         return self._resize_pair(x, y)
 
     def __getitem__(self, idx):
-        rgb_path, cl_path = self.samples[idx]
-        x = self._load_image(rgb_path)
+        band_paths, cl_path = self.samples[idx]
+        x = self._load_image(band_paths)
         y = self._load_mask(cl_path)
 
         if self.train:
@@ -378,7 +400,7 @@ class DecoderUpBlock(nn.Module):
         )
 
     def forward(self, x, skip):
-        x = F.interpolate(x, scale_factor=2, mode="bilinear", align_corners=False)
+        x = F.interpolate(x, size=skip.shape[-2:], mode="bilinear", align_corners=False)
         x = torch.cat([x, skip], dim=1)
         return self.block(x)
 
@@ -458,7 +480,7 @@ class SegPyramidMixerAttention(nn.Module):
 
 
 @torch.no_grad()
-def compute_metrics(logits, targets, num_classes=3, ignore_index=255):
+def compute_metrics(logits, targets, num_classes=NUM_CLASSES, ignore_index=255):
     preds = logits.argmax(dim=1)
     valid = targets != ignore_index
     preds = preds[valid]
@@ -533,6 +555,27 @@ class EMA:
         for name, buffer in model.named_buffers():
             if buffer.dtype.is_floating_point and name in self.backup:
                 buffer.copy_(self.backup[name])
+
+
+def safe_load_state_dict(model: nn.Module, state_dict: dict):
+    model_state = model.state_dict()
+    filtered = {}
+    skipped = []
+
+    for k, v in state_dict.items():
+        if k in model_state and model_state[k].shape == v.shape:
+            filtered[k] = v
+        else:
+            skipped.append(k)
+
+    missing, unexpected = model.load_state_dict(filtered, strict=False)
+
+    if skipped:
+        print(f"Skipped {len(skipped)} checkpoint tensors due to shape mismatch.")
+    if missing:
+        print(f"Missing tensors after load: {len(missing)}")
+    if unexpected:
+        print(f"Unexpected tensors after load: {len(unexpected)}")
 
 
 @torch.inference_mode()
@@ -622,16 +665,19 @@ def train(model, train_loader, train_eval_loader, val_loader, criterion):
     if os.path.exists(CHECKPOINT_PATH):
         print(f"Loading checkpoint: {CHECKPOINT_PATH}")
         checkpoint = torch.load(CHECKPOINT_PATH, map_location=DEVICE, weights_only=False)
-        model.load_state_dict(checkpoint["model"])
-        optimizer.load_state_dict(checkpoint["optimizer"])
-        scheduler.load_state_dict(checkpoint["scheduler"])
-        if "ema" in checkpoint:
-            ema.shadow = {k: v.to(DEVICE) for k, v in checkpoint["ema"].items()}
-        start_epoch = checkpoint["epoch"] + 1
-        global_step = checkpoint.get("global_step", 0)
-        history = checkpoint.get("history", history)
-        best_miou = checkpoint.get("best_miou", 0.0)
-        print(f"Resumed from epoch {start_epoch}")
+        try:
+            safe_load_state_dict(model, checkpoint["model"])
+            optimizer.load_state_dict(checkpoint["optimizer"])
+            scheduler.load_state_dict(checkpoint["scheduler"])
+            if "ema" in checkpoint:
+                ema.shadow = {k: v.to(DEVICE) for k, v in checkpoint["ema"].items()}
+            start_epoch = checkpoint["epoch"] + 1
+            global_step = checkpoint.get("global_step", 0)
+            history = checkpoint.get("history", history)
+            best_miou = checkpoint.get("best_miou", 0.0)
+            print(f"Resumed from epoch {start_epoch}")
+        except Exception as e:
+            print(f"Could not resume from checkpoint, starting fresh. Reason: {e}")
 
     for epoch in range(start_epoch, EPOCHS):
         model.train()
@@ -707,7 +753,6 @@ def train(model, train_loader, train_eval_loader, val_loader, criterion):
                 },
                 BEST_PATH,
             )
-            # print(f"Saved best checkpoint: {BEST_PATH}")
         else:
             epochs_no_improve += 1
 
@@ -725,7 +770,6 @@ def train(model, train_loader, train_eval_loader, val_loader, criterion):
                 },
                 CHECKPOINT_PATH,
             )
-            # print(f"Saved checkpoint at epoch {epoch}")
 
         if epochs_no_improve >= EARLY_STOP_PATIENCE:
             print(f"Early stopping at epoch {epoch} (no improvement for {EARLY_STOP_PATIENCE} epochs)")
@@ -740,12 +784,11 @@ if __name__ == "__main__":
 
     print("Preparing MADOS dataset...")
 
-    label_map = {i: i - 1 for i in range(1, NUM_CLASSES + 1)}
+    label_map = {i: i - 1 for i in range(1, 16)}
 
     train_dataset = MADOSSegDataset(
         root=MADOS_ROOT,
         split="train",
-        resolution=RESOLUTION,
         label_map=label_map,
         image_size=IMAGE_SIZE,
         train=True,
@@ -754,7 +797,6 @@ if __name__ == "__main__":
     train_eval_dataset = MADOSSegDataset(
         root=MADOS_ROOT,
         split="train",
-        resolution=RESOLUTION,
         label_map=label_map,
         image_size=IMAGE_SIZE,
         train=False,
@@ -763,20 +805,18 @@ if __name__ == "__main__":
     val_dataset = MADOSSegDataset(
         root=MADOS_ROOT,
         split="val",
-        resolution=RESOLUTION,
         label_map=label_map,
         image_size=IMAGE_SIZE,
         train=False,
-        filter_empty=True,
+        filter_empty=False,
     )
     test_dataset = MADOSSegDataset(
         root=MADOS_ROOT,
         split="test",
-        resolution=RESOLUTION,
         label_map=label_map,
         image_size=IMAGE_SIZE,
         train=False,
-        filter_empty=True,
+        filter_empty=False,
     )
 
     sample_x, sample_y = train_dataset[0]
@@ -831,21 +871,22 @@ if __name__ == "__main__":
         persistent_workers=(NUM_WORKERS > 0),
     )
 
-    print("Training SegPyramidMixer...")
+    print("Training SegPyramidMixerAttention...")
     model = SegPyramidMixerAttention(in_chans=in_chans, num_classes=NUM_CLASSES)
     criterion = nn.CrossEntropyLoss(ignore_index=255)
     history = train(model, train_loader, train_eval_loader, val_loader, criterion)
 
     if os.path.exists(BEST_PATH):
         best_ckpt = torch.load(BEST_PATH, map_location=DEVICE, weights_only=False)
-        model.load_state_dict(best_ckpt["model"])
+        try:
+            safe_load_state_dict(model, best_ckpt["model"])
+        except Exception as e:
+            print(f"Could not load best checkpoint: {e}")
 
     best_train_loss, best_train_pix_acc, best_train_miou, best_train_pc_iou = evaluate_model(
         model, train_eval_loader, criterion
     )
-    best_val_loss, best_val_pix_acc, best_val_miou, best_val_pc_iou = evaluate_model(
-        model, val_loader, criterion
-    )
+    best_val_loss, best_val_pix_acc, best_val_miou, best_val_pc_iou = evaluate_model(model, val_loader, criterion)
 
     class_ids = np.arange(1, NUM_CLASSES + 1)
     width = 0.35
